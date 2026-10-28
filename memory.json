@@ -1,7 +1,8 @@
 {
     "last_date": "2026-10-28",
-    "posts_today": 1,
+    "posts_today": 2,
     "coin_cooldowns": {
-        "BTC/USDT": 1793189845.8460135
-    }
+        "BTC/USDT": 1793191100.8052998
+    },
+    "last_coin": "BTC/USDT"
 }
