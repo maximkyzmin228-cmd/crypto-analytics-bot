@@ -14,7 +14,7 @@ TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 
-# Настройка Gemini (актуальная модель)
+# Настройка Gemini
 genai.configure(api_key=GEMINI_API_KEY)
 model = genai.GenerativeModel('gemini-3.8-flash')
 
@@ -122,15 +122,17 @@ def get_best_liquid_coin(memory):
         send_error_to_telegram(f"Не удалось отфильтровать рынок BingX: {e}")
         return "BTC/USDT"
 
-def calculate_trade_levels(df):
-    """Математический расчет точек входа, целей и стопа по структуре свечей"""
+def calculate_trade_levels_and_patterns(df):
+    """Расчет уровней сделки и ключевых зон поддержки/сопротивления"""
     current_price = df['close'].iloc[-1]
-    recent_high = df['high'].iloc[-15:].max()
-    recent_low = df['low'].iloc[-15:].min()
     
-    # Определяем тренд/направление по расположению цены в диапазоне
+    recent_high = df['high'].iloc[-20:].max()
+    recent_low = df['low'].iloc[-20:].min()
+    mid_resistance = df['high'].iloc[-20:-5].max()
+    mid_support = df['low'].iloc[-20:-5].min()
+    
     mid_range = (recent_high + recent_low) / 2
-    is_long = current_price <= mid_range # если ближе к низу — ищем лонг от поддержки
+    is_long = current_price <= mid_range
     
     if is_long:
         direction = "Long 🟢"
@@ -153,17 +155,19 @@ def calculate_trade_levels(df):
         'tp1': tp1,
         'tp2': tp2,
         'tp3': tp3,
-        'sl': sl
+        'sl': sl,
+        'support': mid_support,
+        'resistance': mid_resistance
     }
 
-def generate_pro_candlestick_chart(df, symbol, levels):
-    """Генерация профессионального свечного графика со всеми линиями уровней"""
+def generate_pro_chart_with_patterns(df, symbol, levels):
+    """Генерация свечного графика с линиями уровней и паттернов"""
     chart_df = df.copy()
     chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], unit='ms')
     chart_df.set_index('timestamp', inplace=True)
     chart_df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-    # Профессиональная темная тема (как в TradingView)
+    # Профессиональная темная тема
     mc = mpf.make_marketcolors(
         up='#00E676', down='#FF5252',
         wick={'up':'#00E676', 'down':'#FF5252'},
@@ -172,9 +176,22 @@ def generate_pro_candlestick_chart(df, symbol, levels):
     )
     s = mpf.make_mpf_style(marketcolors=mc, facecolor='#131722', figcolor='#181c25', gridcolor='#2a2e39')
 
-    # Линии уровней для отображения на графике
-    hlines_vals = [levels['entry'], levels['tp1'], levels['tp2'], levels['tp3'], levels['sl']]
-    hlines_colors = ['#2962FF', '#00E676', '#00E676', '#00E676', '#FF5252'] # Синий (вход), Зеленые (тейки), Красный (стоп)
+    # Линии на графике: Вход (синий), Тейки (зеленые), Стоп (красный), Поддержка/Сопротивление (желтый/оранжевый)
+    hlines_vals = [
+        levels['entry'], 
+        levels['tp1'], 
+        levels['tp2'], 
+        levels['tp3'], 
+        levels['sl'],
+        levels['support'],
+        levels['resistance']
+    ]
+    hlines_colors = [
+        '#2962FF', 
+        '#00E676', '#00E676', '#00E676', 
+        '#FF5252', 
+        '#FFD700', '#FFA500'
+    ]
     
     chart_path = 'chart.png'
     mpf.plot(
@@ -183,33 +200,34 @@ def generate_pro_candlestick_chart(df, symbol, levels):
         style=s,
         volume=True,
         hlines=dict(hlines=hlines_vals, colors=hlines_colors, linestyle='--', linewidths=1.2),
-        title=f"\nBingX Pro Setup: {symbol} ({levels['direction']})",
+        title=f"\nBingX Pattern Analysis: {symbol} ({levels['direction']})",
         savefig=dict(fname=chart_path, dpi=300, bbox_inches='tight')
     )
     return chart_path
 
 def ask_gemini_human_style(symbol, levels, df):
-    """Генерация живого поста под готовые математические уровни"""
+    """Генерация живого трейдерского поста под реальные уровни"""
     prompt = f"""
     Ты опытный криптотрейдер. Напиши живой, пробивной торговый пост для Telegram по монете {symbol}.
-    ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ИХ В ТЕКСТЕ БЕЗ ИЗМЕНЕНИЙ:
+    ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ЭТИ ТОЧНЫЕ ЦИФРЫ В ТЕКСТЕ:
     - Направление: {levels['direction']}
-    - Вход: {levels['entry']}
+    - Уровень поддержки: {levels['support']} | Сопротивление: {levels['resistance']}
+    - Точка входа: {levels['entry']}
     - TP1: {levels['tp1']} (фиксация 40%, перевод в безубыток)
     - TP2: {levels['tp2']} (фиксация 40%)
     - TP3: {levels['tp3']} (остаток по тренду)
     - Stop Loss: {levels['sl']}
 
     Стиль написания:
-    1. Живой сленг трейдера, уместные стикеры и эмодзи 📉📈🚀. Никакого нейросетевого пафоса и воды.
-    2. Кратко объясни логику по 4H графику (уровни поддержки/сопротивления, поведение объема).
-    3. Укажи риск-менеджмент: плечо х7–х10, так как стоп короткий и технически обоснованный.
+    1. Живой сленг трейдера, уместные стикеры и эмодзи 📉📈🚀. Без нейросетевого пафоса.
+    2. Кратко объясни логику по паттерну и поведению цены у уровней поддержки/сопротивления.
+    3. Укажи риск-менеджмент: плечо х7–х10, короткий технический стоп.
     """
     response = model.generate_content(prompt)
     return response.text
 
 def send_to_telegram(text, image_path):
-    """Отправка свечного графика с линиями и текста в ЛС Telegram"""
+    """Отправка графика и текста в ЛС Telegram"""
     url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     with open(image_path, 'rb') as photo:
         files = {'photo': photo}
@@ -225,22 +243,16 @@ if __name__ == "__main__":
         if not check_time_and_limits(memory):
             exit(0)
             
-        print("Сканируем рынок BingX и рассчитываем уровни...")
+        print("Сканируем рынок BingX, находим паттерны и уровни...")
         symbol = get_best_liquid_coin(memory)
         
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=40)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        # Рассчитываем реальные уровни
-        levels = calculate_trade_levels(df)
-        
-        # Генерируем профессиональный свечной график с линиями
-        chart_file = generate_pro_candlestick_chart(df, symbol, levels)
-        
-        # Генерируем текст поста под эти уровни
+        levels = calculate_trade_levels_and_patterns(df)
+        chart_file = generate_pro_chart_with_patterns(df, symbol, levels)
         analysis_text = ask_gemini_human_style(symbol, levels, df)
         
-        # Отправляем в Telegram
         send_to_telegram(analysis_text, chart_file)
         
         # Обновляем память
@@ -253,7 +265,7 @@ if __name__ == "__main__":
         save_memory(memory)
         git_commit_memory()
         
-        print(f"Профессиональный сетап по {symbol} отправлен в ЛС! Постов за сегодня: {memory['posts_today']}")
+        print(f"Сетап по {symbol} отправлен в ЛС! Постов за сегодня: {memory['posts_today']}")
     except Exception as e:
         error_msg = str(e)
         print(f"Критическая ошибка: {error_msg}")
