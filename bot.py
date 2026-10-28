@@ -1,11 +1,11 @@
-import os
+\import os
 import json
 import time
 import subprocess
 from datetime import datetime, timezone, timedelta
 import ccxt
 import google.generativeai as genai
-from playwright.sync_api import sync_playwright
+import mplfinance as mpf
 import pandas as pd
 import requests
 
@@ -58,7 +58,7 @@ def git_commit_memory():
         print(f"Ошибка обновления памяти через Git: {e}")
 
 def get_best_liquid_coin(memory):
-    """Исправленный поиск монеты с объемом >$50M с ротацией альткоинов"""
+    """Надежный поиск монеты с объемом >$50M и ротацией альткоинов"""
     try:
         tickers = exchange.fetch_tickers()
         candidates = []
@@ -66,7 +66,6 @@ def get_best_liquid_coin(memory):
         for symbol, ticker in tickers.items():
             if not symbol.endswith('/USDT'):
                 continue
-            # Надежный расчет объема (если quoteVolume отсутствует, вычисляем через цену и базу)
             quote_volume = ticker.get('quoteVolume')
             if not quote_volume and ticker.get('close') and ticker.get('baseVolume'):
                 quote_volume = ticker['close'] * ticker['baseVolume']
@@ -80,11 +79,9 @@ def get_best_liquid_coin(memory):
                     'change': abs(change)
                 })
                 
-        # Сортируем по волатильности, чтобы брать самые интересные моменты
         candidates.sort(key=lambda x: x['change'], reverse=True)
         
         last_coin = memory.get("last_coin", "")
-        # Ищем монету, отличную от последней, чтобы не спамить одним и тем же
         for item in candidates:
             sym = item['symbol']
             if sym != last_coin or len(candidates) == 1:
@@ -96,7 +93,7 @@ def get_best_liquid_coin(memory):
         return "BTC/USDT"
 
 def calculate_realistic_levels(df):
-    """Абсолютно реалистичные уровни в процентах от текущей цены (безопасно для плеча x7-x10)"""
+    """Идеально точный расчет уровней в процентах от реальной цены (безопасно для плеча x7-x10)"""
     current_price = float(df['close'].iloc[-1])
     sma10 = float(df['close'].rolling(10).mean().iloc[-1])
     
@@ -129,34 +126,64 @@ def calculate_realistic_levels(df):
         'resistance': round(recent_high, 4)
     }
 
-def take_tradingview_screenshot(symbol):
-    """Делает чистый скриншот живого терминала TradingView для конкретной монеты BingX"""
-    # Преобразуем BTC/USDT -> BINGX:BTCUSDT для TradingView
-    clean_sym = symbol.replace('/', '')
-    tv_symbol = f"BINGX:{clean_sym}"
-    url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
+def generate_terminal_chart(df, symbol, levels):
+    """Генерация профессионального свечного графика в стиле TradingView"""
+    chart_df = df.copy()
+    chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], unit='ms')
+    chart_df.set_index('timestamp', inplace=True)
+    chart_df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
+
+    # Палитра терминала (темный фон #131722, бирюзовые лонги, розовые шорты)
+    mc = mpf.make_marketcolors(
+        up='#26a69a', down='#ef5350',
+        wick={'up':'#26a69a', 'down':'#ef5350'},
+        volume={'up':'#26a69a55', 'down':'#ef535055'},
+        edge='inherit'
+    )
+    s = mpf.make_mpf_style(
+        marketcolors=mc, 
+        facecolor='#131722', 
+        figcolor='#1e222d', 
+        gridcolor='#2a2e39',
+        edgecolor='#363a45',
+        y_on_right=True
+    )
+
+    hlines_vals = [
+        levels['entry'], 
+        levels['tp1'], 
+        levels['tp2'], 
+        levels['tp3'], 
+        levels['sl'],
+        levels['support'],
+        levels['resistance']
+    ]
+    hlines_colors = [
+        '#2962FF',  # Вход - Синий
+        '#26a69a', '#26a69a', '#26a69a',  # Тейки - Зеленые
+        '#ef5350',  # Стоп - Красный
+        '#ff9800', '#ffeb3b'  # Поддержка / Сопротивление
+    ]
     
     chart_path = 'chart.png'
-    try:
-        with sync_playwright() as p:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page(viewport={'width': 1280, 'height': 720})
-            page.goto(url, wait_until="networkidle", timeout=40000)
-            # Даем графику время на полную прорисовку свечей и интерфейса
-            page.wait_for_timeout(7000)
-            page.screenshot(path=chart_path)
-            browser.close()
-    except Exception as e:
-        print(f"Ошибка скриншота TradingView: {e}")
+    mpf.plot(
+        chart_df,
+        type='candle',
+        style=s,
+        volume=True,
+        hlines=dict(hlines=hlines_vals, colors=hlines_colors, linestyle='--', linewidths=1.2),
+        title=f"\nBingX Pro Terminal: {symbol} ({levels['direction']})",
+        savefig=dict(fname=chart_path, dpi=300, bbox_inches='tight')
+    )
     return chart_path
 
 def ask_gemini_human_style(symbol, levels):
-    """Генерация живого трейдерского поста под реальные уровни"""
+    """Генерация живого трейдерского поста под чистые уровни"""
     prompt = f"""
     Ты опытный криптотрейдер. Напиши живой, пробивной торговый пост для Telegram по монете {symbol}.
     ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ИХ БЕЗ ИЗМЕНЕНИЙ В ТЕКСТЕ:
     - Направление: {levels['direction']}
-    - Уровень поддержки: {levels['support']} | Сопротивление: {levels['resistance']}
+    - Зона поддержки: {levels['support']} | Сопротивление: {levels['resistance']}
     - Точка входа: {levels['entry']}
     - TP1: {levels['tp1']} (фиксация 40%, перевод в безубыток)
     - TP2: {levels['tp2']} (фиксация 40%)
@@ -172,7 +199,7 @@ def ask_gemini_human_style(symbol, levels):
     return response.text
 
 def send_to_telegram(text, image_path):
-    """Отправка скриншота TradingView и текста в ЛС Telegram"""
+    """Отправка графика и текста в ЛС Telegram без разметки во избежание сбоев"""
     url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     with open(image_path, 'rb') as photo:
         files = {'photo': photo}
@@ -187,15 +214,15 @@ if __name__ == "__main__":
         
         print("Сканируем ликвидный рынок BingX (альткоины + биток)...")
         symbol = get_best_liquid_coin(memory)
-        print(لинка/монета выбрана: {symbol})
+        print(f"Выбрана монета: {symbol}")
         
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=40)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         levels = calculate_realistic_levels(df)
         
-        print("Делаем скриншот с TradingView...")
-        chart_file = take_tradingview_screenshot(symbol)
+        print("Генерируем профессиональный терминальный график...")
+        chart_file = generate_terminal_chart(df, symbol, levels)
         
         analysis_text = ask_gemini_human_style(symbol, levels)
         
@@ -205,7 +232,7 @@ if __name__ == "__main__":
         save_memory(memory)
         git_commit_memory()
         
-        print(f"Сетап по {symbol} с реальным скриншотом TradingView отправлен в ЛС!")
+        print(f"Сетап по {symbol} успешно отправлен в ЛС!")
     except Exception as e:
         error_msg = str(e)
         print(f"Критическая ошибка: {error_msg}")
