@@ -4,7 +4,6 @@ import time
 import subprocess
 from datetime import datetime, timezone, timedelta
 import ccxt
-import google.generativeai as genai
 import mplfinance as mpf
 import pandas as pd
 import requests
@@ -12,11 +11,7 @@ import requests
 # Загружаем ключи из секретов GitHub
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
-
-# Настройка Gemini
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-3.8-flash')
+OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
 # Подключение к BingX
 exchange = ccxt.bingx()
@@ -47,22 +42,18 @@ def save_memory(memory):
         json.dump(memory, f, indent=4)
 
 def git_commit_memory():
-    """Безопасное автосохранение памяти через Git без падения скрипта"""
+    """Безопасное автосохранение памяти через Git"""
     try:
         subprocess.run(["git", "config", "--global", "user.name", "CryptoBot Action"], capture_output=True)
         subprocess.run(["git", "config", "--global", "user.email", "bot@action.com"], capture_output=True)
         subprocess.run(["git", "add", MEMORY_FILE], capture_output=True)
         
-        # Проверяем, есть ли изменения для коммита
         status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
         if MEMORY_FILE in status.stdout:
             subprocess.run(["git", "commit", "-m", "Update bot memory [skip ci]"], capture_output=True)
             subprocess.run(["git", "push"], capture_output=True)
-            print("Память успешно обновлена в репозитории.")
-        else:
-            print("Изменений в памяти нет, пропускаем git push.")
     except Exception as e:
-        print(f"Предупреждение Git (не влияет на отправку в Telegram): {e}")
+        print(f"Предупреждение Git: {e}")
 
 def get_best_liquid_coin(memory):
     """Надежный поиск монеты с объемом >$50M"""
@@ -108,16 +99,16 @@ def calculate_realistic_levels(df):
     
     if is_long:
         direction = "Long 🟢"
-        sl = round(current_price * 0.985, 4)   # Стоп-лосс -1.5%
-        tp1 = round(current_price * 1.015, 4)  # TP1 +1.5%
-        tp2 = round(current_price * 1.032, 4)  # TP2 +3.2%
-        tp3 = round(current_price * 1.055, 4)  # TP3 +5.5%
+        sl = round(current_price * 0.985, 4)
+        tp1 = round(current_price * 1.015, 4)
+        tp2 = round(current_price * 1.032, 4)
+        tp3 = round(current_price * 1.055, 4)
     else:
         direction = "Short 🔴"
-        sl = round(current_price * 1.015, 4)   # Стоп-лосс +1.5%
-        tp1 = round(current_price * 0.985, 4)  # TP1 -1.5%
-        tp2 = round(current_price * 0.968, 4)  # TP2 -3.2%
-        tp3 = round(current_price * 0.945, 4)  # TP3 -5.5%
+        sl = round(current_price * 1.015, 4)
+        tp1 = round(current_price * 0.985, 4)
+        tp2 = round(current_price * 0.968, 4)
+        tp3 = round(current_price * 0.945, 4)
         
     recent_high = float(df['high'].iloc[-15:].max())
     recent_low = float(df['low'].iloc[-15:].min())
@@ -134,7 +125,7 @@ def calculate_realistic_levels(df):
     }
 
 def generate_terminal_chart(df, symbol, levels):
-    """Генерация профессионального свечного графика в стиле TradingView"""
+    """Генерация свечного графика в стиле TradingView"""
     chart_df = df.copy()
     chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], unit='ms')
     chart_df.set_index('timestamp', inplace=True)
@@ -156,19 +147,12 @@ def generate_terminal_chart(df, symbol, levels):
     )
 
     hlines_vals = [
-        levels['entry'], 
-        levels['tp1'], 
-        levels['tp2'], 
-        levels['tp3'], 
-        levels['sl'],
-        levels['support'],
-        levels['resistance']
+        levels['entry'], levels['tp1'], levels['tp2'], levels['tp3'], 
+        levels['sl'], levels['support'], levels['resistance']
     ]
     hlines_colors = [
-        '#2962FF',  # Вход - Синий
-        '#26a69a', '#26a69a', '#26a69a',  # Тейки - Зеленые
-        '#ef5350',  # Стоп - Красный
-        '#ff9800', '#ffeb3b'  # Поддержка / Сопротивление
+        '#2962FF', '#26a69a', '#26a69a', '#26a69a', 
+        '#ef5350', '#ff9800', '#ffeb3b'
     ]
     
     chart_path = 'chart.png'
@@ -183,8 +167,13 @@ def generate_terminal_chart(df, symbol, levels):
     )
     return chart_path
 
-def ask_gemini_human_style(symbol, levels):
-    """Генерация живого трейдерского поста"""
+def ask_openrouter_human_style(symbol, levels):
+    """Генерация живого поста через бесплатный пул OpenRouter"""
+    url = "https://openrouter.ai/api/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENROUTER_API_KEY}",
+        "Content-Type": "application/json"
+    }
     prompt = f"""
     Ты опытный криптотрейдер. Напиши живой, пробивной торговый пост для Telegram по монете {symbol}.
     ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ИХ БЕЗ ИЗМЕНЕНИЙ В ТЕКСТЕ:
@@ -201,8 +190,17 @@ def ask_gemini_human_style(symbol, levels):
     2. Кратко объясни логику по поведению цены у указанных уровней поддержки/сопротивления.
     3. Укажи риск-менеджмент: плечо х7–х10, короткий технический стоп.
     """
-    response = model.generate_content(prompt)
-    return response.text
+    data = {
+        "model": "openrouter/free",  # Автоматически выбирает лучшую доступную бесплатную модель
+        "messages": [{"role": "user", "content": prompt}]
+    }
+    
+    response = requests.post(url, headers=headers, json=data)
+    if response.status_code != 200:
+        raise Exception(f"Ошибка API OpenRouter: {response.text}")
+        
+    res_json = response.json()
+    return res_json['choices'][0]['message']['content']
 
 def send_to_telegram(text, image_path):
     """Отправка графика и текста в ЛС Telegram"""
@@ -230,7 +228,8 @@ if __name__ == "__main__":
         print("Генерируем профессиональный терминальный график...")
         chart_file = generate_terminal_chart(df, symbol, levels)
         
-        analysis_text = ask_gemini_human_style(symbol, levels)
+        print("Генерация аналитики через OpenRouter (free)...")
+        analysis_text = ask_openrouter_human_style(symbol, levels)
         
         send_to_telegram(analysis_text, chart_file)
         
