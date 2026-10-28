@@ -1,4 +1,4 @@
-\import os
+import os
 import json
 import time
 import subprocess
@@ -47,18 +47,25 @@ def save_memory(memory):
         json.dump(memory, f, indent=4)
 
 def git_commit_memory():
-    """Автосохранение памяти в репозиторий GitHub"""
+    """Безопасное автосохранение памяти через Git без падения скрипта"""
     try:
-        subprocess.run(["git", "config", "--global", "user.name", "CryptoBot Action"], check=True)
-        subprocess.run(["git", "config", "--global", "user.email", "bot@action.com"], check=True)
-        subprocess.run(["git", "add", MEMORY_FILE], check=True)
-        subprocess.run(["git", "commit", -m, "Update bot memory [skip ci]"], check=True)
-        subprocess.run(["git", "push"], check=True)
+        subprocess.run(["git", "config", "--global", "user.name", "CryptoBot Action"], capture_output=True)
+        subprocess.run(["git", "config", "--global", "user.email", "bot@action.com"], capture_output=True)
+        subprocess.run(["git", "add", MEMORY_FILE], capture_output=True)
+        
+        # Проверяем, есть ли изменения для коммита
+        status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
+        if MEMORY_FILE in status.stdout:
+            subprocess.run(["git", "commit", "-m", "Update bot memory [skip ci]"], capture_output=True)
+            subprocess.run(["git", "push"], capture_output=True)
+            print("Память успешно обновлена в репозитории.")
+        else:
+            print("Изменений в памяти нет, пропускаем git push.")
     except Exception as e:
-        print(f"Ошибка обновления памяти через Git: {e}")
+        print(f"Предупреждение Git (не влияет на отправку в Telegram): {e}")
 
 def get_best_liquid_coin(memory):
-    """Надежный поиск монеты с объемом >$50M и ротацией альткоинов"""
+    """Надежный поиск монеты с объемом >$50M"""
     try:
         tickers = exchange.fetch_tickers()
         candidates = []
@@ -93,7 +100,7 @@ def get_best_liquid_coin(memory):
         return "BTC/USDT"
 
 def calculate_realistic_levels(df):
-    """Идеально точный расчет уровней в процентах от реальной цены (безопасно для плеча x7-x10)"""
+    """Точный расчет уровней в процентах от реальной цены (для плеча x7-x10)"""
     current_price = float(df['close'].iloc[-1])
     sma10 = float(df['close'].rolling(10).mean().iloc[-1])
     
@@ -133,7 +140,6 @@ def generate_terminal_chart(df, symbol, levels):
     chart_df.set_index('timestamp', inplace=True)
     chart_df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-    # Палитра терминала (темный фон #131722, бирюзовые лонги, розовые шорты)
     mc = mpf.make_marketcolors(
         up='#26a69a', down='#ef5350',
         wick={'up':'#26a69a', 'down':'#ef5350'},
@@ -178,7 +184,7 @@ def generate_terminal_chart(df, symbol, levels):
     return chart_path
 
 def ask_gemini_human_style(symbol, levels):
-    """Генерация живого трейдерского поста под чистые уровни"""
+    """Генерация живого трейдерского поста"""
     prompt = f"""
     Ты опытный криптотрейдер. Напиши живой, пробивной торговый пост для Telegram по монете {symbol}.
     ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ИХ БЕЗ ИЗМЕНЕНИЙ В ТЕКСТЕ:
@@ -199,7 +205,7 @@ def ask_gemini_human_style(symbol, levels):
     return response.text
 
 def send_to_telegram(text, image_path):
-    """Отправка графика и текста в ЛС Telegram без разметки во избежание сбоев"""
+    """Отправка графика и текста в ЛС Telegram"""
     url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     with open(image_path, 'rb') as photo:
         files = {'photo': photo}
@@ -212,7 +218,7 @@ if __name__ == "__main__":
     try:
         memory = load_memory()
         
-        print("Сканируем ликвидный рынок BingX (альткоины + биток)...")
+        print("Сканируем ликвидный рынок BingX...")
         symbol = get_best_liquid_coin(memory)
         print(f"Выбрана монета: {symbol}")
         
