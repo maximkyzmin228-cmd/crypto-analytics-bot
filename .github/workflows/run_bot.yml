@@ -20,8 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ccxt google-generativeai playwright pandas requests
-          playwright install chromium
+          pip install ccxt google-generativeai mplfinance pandas requests
 
       - name: Run bot script
         env:
