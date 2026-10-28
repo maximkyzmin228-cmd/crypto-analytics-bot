@@ -5,7 +5,7 @@ import subprocess
 from datetime import datetime, timezone, timedelta
 import ccxt
 import google.generativeai as genai
-import mplfinance as mpf
+from playwright.sync_api import sync_playwright
 import pandas as pd
 import requests
 
@@ -22,7 +22,7 @@ model = genai.GenerativeModel('gemini-3.8-flash')
 exchange = ccxt.bingx()
 
 MEMORY_FILE = "memory.json"
-COOLDOWN_HOURS = 0  # На время тестов убираем кулдаун между монетами
+COOLDOWN_HOURS = 0  # Для тестов кулдаун отключен
 
 def send_error_to_telegram(error_text):
     """Отправка уведомления о сбое в ЛС"""
@@ -52,18 +52,13 @@ def git_commit_memory():
         subprocess.run(["git", "config", "--global", "user.name", "CryptoBot Action"], check=True)
         subprocess.run(["git", "config", "--global", "user.email", "bot@action.com"], check=True)
         subprocess.run(["git", "add", MEMORY_FILE], check=True)
-        subprocess.run(["git", "commit", "-m", "Update bot memory [skip ci]"], check=True)
+        subprocess.run(["git", "commit", -m, "Update bot memory [skip ci]"], check=True)
         subprocess.run(["git", "push"], check=True)
     except Exception as e:
         print(f"Ошибка обновления памяти через Git: {e}")
 
-def check_time_and_limits(memory):
-    """РЕЖИМ ТЕСТОВ: лимиты временно отключены, бот работает всегда по клику"""
-    print("🛠 Режим тестов: ограничения по времени и лимитам отключены.")
-    return True
-
 def get_best_liquid_coin(memory):
-    """Динамический поиск монеты с объемом >$50M"""
+    """Исправленный поиск монеты с объемом >$50M с ротацией альткоинов"""
     try:
         tickers = exchange.fetch_tickers()
         candidates = []
@@ -71,7 +66,11 @@ def get_best_liquid_coin(memory):
         for symbol, ticker in tickers.items():
             if not symbol.endswith('/USDT'):
                 continue
-            quote_volume = ticker.get('quoteVolume') or 0
+            # Надежный расчет объема (если quoteVolume отсутствует, вычисляем через цену и базу)
+            quote_volume = ticker.get('quoteVolume')
+            if not quote_volume and ticker.get('close') and ticker.get('baseVolume'):
+                quote_volume = ticker['close'] * ticker['baseVolume']
+            quote_volume = quote_volume or 0
             
             if quote_volume >= 50_000_000:
                 change = ticker.get('percentage') or 0
@@ -81,37 +80,44 @@ def get_best_liquid_coin(memory):
                     'change': abs(change)
                 })
                 
+        # Сортируем по волатильности, чтобы брать самые интересные моменты
         candidates.sort(key=lambda x: x['change'], reverse=True)
+        
+        last_coin = memory.get("last_coin", "")
+        # Ищем монету, отличную от последней, чтобы не спамить одним и тем же
+        for item in candidates:
+            sym = item['symbol']
+            if sym != last_coin or len(candidates) == 1:
+                return sym
+                
         return candidates[0]['symbol'] if candidates else "BTC/USDT"
     except Exception as e:
         send_error_to_telegram(f"Не удалось отфильтровать рынок BingX: {e}")
         return "BTC/USDT"
 
-def calculate_clean_trade_levels(df):
-    """Чистый математический расчет уровней относительно реальной цены"""
+def calculate_realistic_levels(df):
+    """Абсолютно реалистичные уровни в процентах от текущей цены (безопасно для плеча x7-x10)"""
     current_price = float(df['close'].iloc[-1])
-    ma20 = float(df['close'].rolling(20).mean().iloc[-1])
+    sma10 = float(df['close'].rolling(10).mean().iloc[-1])
     
-    is_long = current_price >= ma20
-    
-    recent_high = float(df['high'].iloc[-20:].max())
-    recent_low = float(df['low'].iloc[-20:].min())
+    is_long = current_price >= sma10
     
     if is_long:
         direction = "Long 🟢"
-        sl = round(min(current_price * 0.985, recent_low * 0.995), 4)
-        risk = current_price - sl
-        tp1 = round(current_price + risk * 1.5, 4)
-        tp2 = round(current_price + risk * 2.8, 4)
-        tp3 = round(current_price + risk * 4.5, 4)
+        sl = round(current_price * 0.985, 4)   # Стоп-лосс -1.5%
+        tp1 = round(current_price * 1.015, 4)  # TP1 +1.5%
+        tp2 = round(current_price * 1.032, 4)  # TP2 +3.2%
+        tp3 = round(current_price * 1.055, 4)  # TP3 +5.5%
     else:
         direction = "Short 🔴"
-        sl = round(max(current_price * 1.015, recent_high * 1.005), 4)
-        risk = sl - current_price
-        tp1 = round(current_price - risk * 1.5, 4)
-        tp2 = round(current_price - risk * 2.8, 4)
-        tp3 = round(current_price - risk * 4.5, 4)
+        sl = round(current_price * 1.015, 4)   # Стоп-лосс +1.5%
+        tp1 = round(current_price * 0.985, 4)  # TP1 -1.5%
+        tp2 = round(current_price * 0.968, 4)  # TP2 -3.2%
+        tp3 = round(current_price * 0.945, 4)  # TP3 -5.5%
         
+    recent_high = float(df['high'].iloc[-15:].max())
+    recent_low = float(df['low'].iloc[-15:].min())
+    
     return {
         'direction': direction,
         'entry': round(current_price, 4),
@@ -123,63 +129,34 @@ def calculate_clean_trade_levels(df):
         'resistance': round(recent_high, 4)
     }
 
-def generate_tradingview_style_chart(df, symbol, levels):
-    """Генерация графика в стиле TradingView"""
-    chart_df = df.copy()
-    chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], unit='ms')
-    chart_df.set_index('timestamp', inplace=True)
-    chart_df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-
-    mc = mpf.make_marketcolors(
-        up='#26a69a', down='#ef5350',
-        wick={'up':'#26a69a', 'down':'#ef5350'},
-        volume={'up':'#26a69a55', 'down':'#ef535055'},
-        edge='inherit'
-    )
-    s = mpf.make_mpf_style(
-        marketcolors=mc, 
-        facecolor='#131722', 
-        figcolor='#1e222d', 
-        gridcolor='#2a2e39',
-        edgecolor='#363a45',
-        y_on_right=True
-    )
-
-    hlines_vals = [
-        levels['entry'], 
-        levels['tp1'], 
-        levels['tp2'], 
-        levels['tp3'], 
-        levels['sl'],
-        levels['support'],
-        levels['resistance']
-    ]
-    hlines_colors = [
-        '#2962FF',  # Вход
-        '#26a69a', '#26a69a', '#26a69a',  # Тейки
-        '#ef5350',  # Стоп
-        '#ff9800', '#ffeb3b'  # Поддержка / Сопротивление
-    ]
+def take_tradingview_screenshot(symbol):
+    """Делает чистый скриншот живого терминала TradingView для конкретной монеты BingX"""
+    # Преобразуем BTC/USDT -> BINGX:BTCUSDT для TradingView
+    clean_sym = symbol.replace('/', '')
+    tv_symbol = f"BINGX:{clean_sym}"
+    url = f"https://www.tradingview.com/chart/?symbol={tv_symbol}"
     
     chart_path = 'chart.png'
-    mpf.plot(
-        chart_df,
-        type='candle',
-        style=s,
-        volume=True,
-        hlines=dict(hlines=hlines_vals, colors=hlines_colors, linestyle='--', linewidths=1.0),
-        title=f"\nBingX Pro Chart: {symbol} ({levels['direction']})",
-        savefig=dict(fname=chart_path, dpi=300, bbox_inches='tight')
-    )
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            page = browser.new_page(viewport={'width': 1280, 'height': 720})
+            page.goto(url, wait_until="networkidle", timeout=40000)
+            # Даем графику время на полную прорисовку свечей и интерфейса
+            page.wait_for_timeout(7000)
+            page.screenshot(path=chart_path)
+            browser.close()
+    except Exception as e:
+        print(f"Ошибка скриншота TradingView: {e}")
     return chart_path
 
-def ask_gemini_human_style(symbol, levels, df):
-    """Генерация живого трейдерского поста"""
+def ask_gemini_human_style(symbol, levels):
+    """Генерация живого трейдерского поста под реальные уровни"""
     prompt = f"""
     Ты опытный криптотрейдер. Напиши живой, пробивной торговый пост для Telegram по монете {symbol}.
     ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ИХ БЕЗ ИЗМЕНЕНИЙ В ТЕКСТЕ:
     - Направление: {levels['direction']}
-    - Зона поддержки: {levels['support']} | Сопротивление: {levels['resistance']}
+    - Уровень поддержки: {levels['support']} | Сопротивление: {levels['resistance']}
     - Точка входа: {levels['entry']}
     - TP1: {levels['tp1']} (фиксация 40%, перевод в безубыток)
     - TP2: {levels['tp2']} (фиксация 40%)
@@ -195,7 +172,7 @@ def ask_gemini_human_style(symbol, levels, df):
     return response.text
 
 def send_to_telegram(text, image_path):
-    """Отправка графика и текста в ЛС Telegram без разметки во избежание сбоев"""
+    """Отправка скриншота TradingView и текста в ЛС Telegram"""
     url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     with open(image_path, 'rb') as photo:
         files = {'photo': photo}
@@ -208,18 +185,19 @@ if __name__ == "__main__":
     try:
         memory = load_memory()
         
-        if not check_time_and_limits(memory):
-            exit(0)
-            
-        print("Сканируем рынок BingX и рассчитываем чистые уровни...")
+        print("Сканируем ликвидный рынок BingX (альткоины + биток)...")
         symbol = get_best_liquid_coin(memory)
+        print(لинка/монета выбрана: {symbol})
         
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=40)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        levels = calculate_clean_trade_levels(df)
-        chart_file = generate_tradingview_style_chart(df, symbol, levels)
-        analysis_text = ask_gemini_human_style(symbol, levels, df)
+        levels = calculate_realistic_levels(df)
+        
+        print("Делаем скриншот с TradingView...")
+        chart_file = take_tradingview_screenshot(symbol)
+        
+        analysis_text = ask_gemini_human_style(symbol, levels)
         
         send_to_telegram(analysis_text, chart_file)
         
@@ -227,7 +205,7 @@ if __name__ == "__main__":
         save_memory(memory)
         git_commit_memory()
         
-        print(f"Сетап по {symbol} успешно отправлен в ЛС!")
+        print(f"Сетап по {symbol} с реальным скриншотом TradingView отправлен в ЛС!")
     except Exception as e:
         error_msg = str(e)
         print(f"Критическая ошибка: {error_msg}")
