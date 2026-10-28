@@ -20,12 +20,12 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ccxt google-generativeai mplfinance pandas requests
+          pip install ccxt mplfinance pandas requests
 
       - name: Run bot script
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          OPENROUTER_API_KEY: ${{ secrets.OPENROUTER_API_KEY }}
         run: |
           python bot.py
