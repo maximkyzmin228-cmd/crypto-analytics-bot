@@ -1,0 +1,33 @@
+name: Crypto Bot Runner
+
+on:
+  schedule:
+    - cron: '0 */8 * * *' # Запуск каждые 8 часов (3 раза в сутки: 00:00, 08:00, 16:00 UTC)
+  workflow_dispatch: # Кнопка ручного запуска на GitHub в любой момент
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Разрешение для автосохранения памяти через git push
+      
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          pip install ccxt google-generativeai matplotlib pandas requests
+
+      - name: Run bot script
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          GEMINI_AI_KEY: ${{ secrets.GEMINI_AI_KEY }}
+        run: |
+          python bot.py
