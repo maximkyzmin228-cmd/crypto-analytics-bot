@@ -2,14 +2,14 @@ name: Crypto Bot Runner
 
 on:
   schedule:
-    - cron: '0 */8 * * *' # Запуск каждые 8 часов (3 раза в сутки: 00:00, 08:00, 16:00 UTC)
-  workflow_dispatch: # Кнопка ручного запуска на GitHub в любой момент
+    - cron: '30 7,9,11,13,15 * * *' # Проверки в ключевые часы внутри окна 10:30 - 18:00 МСК
+  workflow_dispatch: # Кнопка ручного запуска на GitHub
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Разрешение для автосохранения памяти через git push
+      contents: write # Для автосохранения памяти и счетчиков постов через git
       
     steps:
       - name: Checkout code
