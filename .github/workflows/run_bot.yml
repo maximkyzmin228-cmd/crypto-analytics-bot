@@ -1,15 +1,13 @@
 name: Crypto Bot Runner
 
 on:
-  schedule:
-    - cron: '30 7,9,11,13,15 * * *' # Проверки в ключевые часы внутри окна 10:30 - 18:00 МСК
   workflow_dispatch: # Кнопка ручного запуска на GitHub
 
 jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Для автосохранения памяти и счетчиков через git
+      contents: write
       
     steps:
       - name: Checkout code
@@ -22,7 +20,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ccxt google-generativeai mplfinance pandas requests
+          pip install ccxt google-generativeai playwright pandas requests
+          playwright install chromium
 
       - name: Run bot script
         env:
