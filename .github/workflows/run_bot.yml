@@ -9,7 +9,7 @@ jobs:
   run-bot:
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Для автосохранения памяти и счетчиков постов через git
+      contents: write # Для автосохранения памяти и счетчиков через git
       
     steps:
       - name: Checkout code
@@ -22,7 +22,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install ccxt google-generativeai matplotlib pandas requests
+          pip install ccxt google-generativeai mplfinance pandas requests
 
       - name: Run bot script
         env:
