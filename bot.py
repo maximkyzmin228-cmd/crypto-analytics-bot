@@ -122,61 +122,66 @@ def get_best_liquid_coin(memory):
         send_error_to_telegram(f"Не удалось отфильтровать рынок BingX: {e}")
         return "BTC/USDT"
 
-def calculate_trade_levels_and_patterns(df):
-    """Расчет уровней сделки и ключевых зон поддержки/сопротивления"""
-    current_price = df['close'].iloc[-1]
+def calculate_clean_trade_levels(df):
+    """Чистый математический расчет уровней относительно реальной цены без ошибок"""
+    current_price = float(df['close'].iloc[-1])
+    ma20 = float(df['close'].rolling(20).mean().iloc[-1])
     
-    recent_high = df['high'].iloc[-20:].max()
-    recent_low = df['low'].iloc[-20:].min()
-    mid_resistance = df['high'].iloc[-20:-5].max()
-    mid_support = df['low'].iloc[-20:-5].min()
+    # Тренд определяем по положению цены относительно скользящей средней
+    is_long = current_price >= ma20
     
-    mid_range = (recent_high + recent_low) / 2
-    is_long = current_price <= mid_range
+    recent_high = float(df['high'].iloc[-20:].max())
+    recent_low = float(df['low'].iloc[-20:].min())
     
     if is_long:
         direction = "Long 🟢"
-        sl = round(recent_low * 0.993, 4)
+        sl = round(min(current_price * 0.985, recent_low * 0.995), 4) # стоп на 1.5% ниже или за поддержкой
         risk = current_price - sl
         tp1 = round(current_price + risk * 1.5, 4)
-        tp2 = round(current_price + risk * 2.5, 4)
-        tp3 = round(current_price + risk * 4.0, 4)
+        tp2 = round(current_price + risk * 2.8, 4)
+        tp3 = round(current_price + risk * 4.5, 4)
     else:
         direction = "Short 🔴"
-        sl = round(recent_high * 1.007, 4)
+        sl = round(max(current_price * 1.015, recent_high * 1.005), 4) # стоп на 1.5% выше или за сопротивлением
         risk = sl - current_price
         tp1 = round(current_price - risk * 1.5, 4)
-        tp2 = round(current_price - risk * 2.5, 4)
-        tp3 = round(current_price - risk * 4.0, 4)
+        tp2 = round(current_price - risk * 2.8, 4)
+        tp3 = round(current_price - risk * 4.5, 4)
         
     return {
         'direction': direction,
-        'entry': current_price,
+        'entry': round(current_price, 4),
         'tp1': tp1,
         'tp2': tp2,
         'tp3': tp3,
         'sl': sl,
-        'support': mid_support,
-        'resistance': mid_resistance
+        'support': round(recent_low, 4),
+        'resistance': round(recent_high, 4)
     }
 
-def generate_pro_chart_with_patterns(df, symbol, levels):
-    """Генерация свечного графика с линиями уровней и паттернов"""
+def generate_tradingview_style_chart(df, symbol, levels):
+    """Генерация графика в точном стиле интерфейса TradingView"""
     chart_df = df.copy()
     chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], unit='ms')
     chart_df.set_index('timestamp', inplace=True)
     chart_df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 
-    # Профессиональная темная тема
+    # Палитра TradingView (темный фон #131722, бирюзовый лонг, розовый шорт)
     mc = mpf.make_marketcolors(
-        up='#00E676', down='#FF5252',
-        wick={'up':'#00E676', 'down':'#FF5252'},
-        volume={'up':'#00E67655', 'down':'#FF525255'},
+        up='#26a69a', down='#ef5350',
+        wick={'up':'#26a69a', 'down':'#ef5350'},
+        volume={'up':'#26a69a55', 'down':'#ef535055'},
         edge='inherit'
     )
-    s = mpf.make_mpf_style(marketcolors=mc, facecolor='#131722', figcolor='#181c25', gridcolor='#2a2e39')
+    s = mpf.make_mpf_style(
+        marketcolors=mc, 
+        facecolor='#131722', 
+        figcolor='#1e222d', 
+        gridcolor='#2a2e39',
+        edgecolor='#363a45',
+        y_on_right=True
+    )
 
-    # Линии на графике: Вход (синий), Тейки (зеленые), Стоп (красный), Поддержка/Сопротивление (желтый/оранжевый)
     hlines_vals = [
         levels['entry'], 
         levels['tp1'], 
@@ -187,10 +192,10 @@ def generate_pro_chart_with_patterns(df, symbol, levels):
         levels['resistance']
     ]
     hlines_colors = [
-        '#2962FF', 
-        '#00E676', '#00E676', '#00E676', 
-        '#FF5252', 
-        '#FFD700', '#FFA500'
+        '#2962FF',  # Вход - Синий
+        '#26a69a', '#26a69a', '#26a69a',  # Тейки - Зеленые
+        '#ef5350',  # Стоп - Красный
+        '#ff9800', '#ffeb3b'  # Зоны поддержки / сопротивления
     ]
     
     chart_path = 'chart.png'
@@ -199,19 +204,19 @@ def generate_pro_chart_with_patterns(df, symbol, levels):
         type='candle',
         style=s,
         volume=True,
-        hlines=dict(hlines=hlines_vals, colors=hlines_colors, linestyle='--', linewidths=1.2),
-        title=f"\nBingX Pattern Analysis: {symbol} ({levels['direction']})",
+        hlines=dict(hlines=hlines_vals, colors=hlines_colors, linestyle='--', linewidths=1.0),
+        title=f"\nBingX Pro Chart: {symbol} ({levels['direction']})",
         savefig=dict(fname=chart_path, dpi=300, bbox_inches='tight')
     )
     return chart_path
 
 def ask_gemini_human_style(symbol, levels, df):
-    """Генерация живого трейдерского поста под реальные уровни"""
+    """Генерация живого трейдерского поста под реальные математические уровни"""
     prompt = f"""
     Ты опытный криптотрейдер. Напиши живой, пробивной торговый пост для Telegram по монете {symbol}.
-    ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ЭТИ ТОЧНЫЕ ЦИФРЫ В ТЕКСТЕ:
+    ОБЯЗАТЕЛЬНО ИСПОЛЬЗУЙ ИХ БЕЗ ИЗМЕНЕНИЙ В ТЕКСТЕ:
     - Направление: {levels['direction']}
-    - Уровень поддержки: {levels['support']} | Сопротивление: {levels['resistance']}
+    - Зона поддержки: {levels['support']} | Сопротивление: {levels['resistance']}
     - Точка входа: {levels['entry']}
     - TP1: {levels['tp1']} (фиксация 40%, перевод в безубыток)
     - TP2: {levels['tp2']} (фиксация 40%)
@@ -219,8 +224,8 @@ def ask_gemini_human_style(symbol, levels, df):
     - Stop Loss: {levels['sl']}
 
     Стиль написания:
-    1. Живой сленг трейдера, уместные стикеры и эмодзи 📉📈🚀. Без нейросетевого пафоса.
-    2. Кратко объясни логику по паттерну и поведению цены у уровней поддержки/сопротивления.
+    1. Живой сленг трейдера, уместные стикеры и эмодзи 📉📈🚀. Никакого нейросетевого пафоса.
+    2. Кратко объясни логику по поведению цены у указанных уровней поддержки/сопротивления.
     3. Укажи риск-менеджмент: плечо х7–х10, короткий технический стоп.
     """
     response = model.generate_content(prompt)
@@ -243,14 +248,14 @@ if __name__ == "__main__":
         if not check_time_and_limits(memory):
             exit(0)
             
-        print("Сканируем рынок BingX, находим паттерны и уровни...")
+        print("Сканируем рынок BingX и рассчитываем чистые уровни...")
         symbol = get_best_liquid_coin(memory)
         
         ohlcv = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=40)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
-        levels = calculate_trade_levels_and_patterns(df)
-        chart_file = generate_pro_chart_with_patterns(df, symbol, levels)
+        levels = calculate_clean_trade_levels(df)
+        chart_file = generate_tradingview_style_chart(df, symbol, levels)
         analysis_text = ask_gemini_human_style(symbol, levels, df)
         
         send_to_telegram(analysis_text, chart_file)
@@ -265,7 +270,7 @@ if __name__ == "__main__":
         save_memory(memory)
         git_commit_memory()
         
-        print(f"Сетап по {symbol} отправлен в ЛС! Постов за сегодня: {memory['posts_today']}")
+        print(f"Сетап по {symbol} успешно отправлен в ЛС! Постов за сегодня: {memory['posts_today']}")
     except Exception as e:
         error_msg = str(e)
         print(f"Критическая ошибка: {error_msg}")
