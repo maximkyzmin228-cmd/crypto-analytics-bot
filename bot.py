@@ -232,11 +232,12 @@ def ask_gemini_human_style(symbol, levels, df):
     return response.text
 
 def send_to_telegram(text, image_path):
-    """Отправка графика и текста в ЛС Telegram"""
+    """Отправка графика и текста в ЛС Telegram без ошибок парсера"""
     url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     with open(image_path, 'rb') as photo:
         files = {'photo': photo}
-        data = {'chat_id': TELEGRAM_CHAT_ID, 'caption': text[:1024], 'parse_mode': 'Markdown'}
+        # Убираем parse_mode, чтобы Telegram не пытался парсить обрезанные теги
+        data = {'chat_id': TELEGRAM_CHAT_ID, 'caption': text[:1024]}
         response = requests.post(url_photo, data=data, files=files)
         if response.status_code != 200:
             send_error_to_telegram(f"Ошибка отправки в Telegram: {response.text}")
