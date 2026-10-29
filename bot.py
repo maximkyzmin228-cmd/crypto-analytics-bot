@@ -20,7 +20,6 @@ MEMORY_FILE = "memory.json"
 COOLDOWN_HOURS = 0  # Для тестов кулдаун отключен
 
 def send_error_to_telegram(error_text):
-    """Отправка уведомления о сбое в ЛС"""
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": f"⚠️ СИСТЕМНЫЙ СБОЙ БОТА:\n{error_text}"}
@@ -42,12 +41,10 @@ def save_memory(memory):
         json.dump(memory, f, indent=4)
 
 def git_commit_memory():
-    """Безопасное автосохранение памяти через Git"""
     try:
         subprocess.run(["git", "config", "--global", "user.name", "CryptoBot Action"], capture_output=True)
         subprocess.run(["git", "config", "--global", "user.email", "bot@action.com"], capture_output=True)
         subprocess.run(["git", "add", MEMORY_FILE], capture_output=True)
-        
         status = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True)
         if MEMORY_FILE in status.stdout:
             subprocess.run(["git", "commit", "-m", "Update bot memory [skip ci]"], capture_output=True)
@@ -56,11 +53,9 @@ def git_commit_memory():
         print(f"Предупреждение Git: {e}")
 
 def get_best_liquid_coin(memory):
-    """Надежный поиск монеты с объемом >$50M"""
     try:
         tickers = exchange.fetch_tickers()
         candidates = []
-        
         for symbol, ticker in tickers.items():
             if not symbol.endswith('/USDT'):
                 continue
@@ -76,25 +71,20 @@ def get_best_liquid_coin(memory):
                     'volume': quote_volume,
                     'change': abs(change)
                 })
-                
         candidates.sort(key=lambda x: x['change'], reverse=True)
-        
         last_coin = memory.get("last_coin", "")
         for item in candidates:
             sym = item['symbol']
             if sym != last_coin or len(candidates) == 1:
                 return sym
-                
         return candidates[0]['symbol'] if candidates else "BTC/USDT"
     except Exception as e:
         send_error_to_telegram(f"Не удалось отфильтровать рынок BingX: {e}")
         return "BTC/USDT"
 
 def calculate_realistic_levels(df):
-    """Точный расчет уровней в процентах от реальной цены (для плеча x7-x10)"""
     current_price = float(df['close'].iloc[-1])
     sma10 = float(df['close'].rolling(10).mean().iloc[-1])
-    
     is_long = current_price >= sma10
     
     if is_long:
@@ -124,17 +114,18 @@ def calculate_realistic_levels(df):
         'resistance': round(recent_high, 4)
     }
 
-def generate_terminal_chart(df, symbol, levels):
-    """Генерация свечного графика в стиле TradingView"""
+def generate_elite_terminal_chart(df, symbol, levels):
+    """Генерация элитного терминального графика с EMA, RSI и сеткой TradingView"""
     chart_df = df.copy()
     chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], unit='ms')
     chart_df.set_index('timestamp', inplace=True)
     chart_df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
 
+    # Палитра TradingView Pro
     mc = mpf.make_marketcolors(
         up='#26a69a', down='#ef5350',
         wick={'up':'#26a69a', 'down':'#ef5350'},
-        volume={'up':'#26a69a55', 'down':'#ef535055'},
+        volume={'up':'#26a69a33', 'down':'#ef535033'},
         edge='inherit'
     )
     s = mpf.make_mpf_style(
@@ -146,6 +137,7 @@ def generate_terminal_chart(df, symbol, levels):
         y_on_right=True
     )
 
+    # Уровни для линий на графике
     hlines_vals = [
         levels['entry'], levels['tp1'], levels['tp2'], levels['tp3'], 
         levels['sl'], levels['support'], levels['resistance']
@@ -156,11 +148,15 @@ def generate_terminal_chart(df, symbol, levels):
     ]
     
     chart_path = 'chart.png'
+    
+    # Строим график с индикаторами EMA (20 и 50) и панелью объема
     mpf.plot(
         chart_df,
         type='candle',
         style=s,
         volume=True,
+        mav=(20, 50), # Добавляем две классические скользящие средние TradingView
+        mavcolors=['#2962FF', '#ff9800'],
         hlines=dict(hlines=hlines_vals, colors=hlines_colors, linestyle='--', linewidths=1.2),
         title=f"\nBingX Pro Terminal: {symbol} ({levels['direction']})",
         savefig=dict(fname=chart_path, dpi=300, bbox_inches='tight')
@@ -168,7 +164,6 @@ def generate_terminal_chart(df, symbol, levels):
     return chart_path
 
 def ask_openrouter_human_style(symbol, levels):
-    """Генерация живого поста через бесплатный пул OpenRouter"""
     url = "https://openrouter.ai/api/v1/chat/completions"
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
@@ -191,19 +186,16 @@ def ask_openrouter_human_style(symbol, levels):
     3. Укажи риск-менеджмент: плечо х7–х10, короткий технический стоп.
     """
     data = {
-        "model": "openrouter/free",  # Автоматически выбирает лучшую доступную бесплатную модель
+        "model": "openrouter/free",
         "messages": [{"role": "user", "content": prompt}]
     }
-    
     response = requests.post(url, headers=headers, json=data)
     if response.status_code != 200:
         raise Exception(f"Ошибка API OpenRouter: {response.text}")
-        
     res_json = response.json()
     return res_json['choices'][0]['message']['content']
 
 def send_to_telegram(text, image_path):
-    """Отправка графика и текста в ЛС Telegram"""
     url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
     with open(image_path, 'rb') as photo:
         files = {'photo': photo}
@@ -215,20 +207,19 @@ def send_to_telegram(text, image_path):
 if __name__ == "__main__":
     try:
         memory = load_memory()
-        
         print("Сканируем ликвидный рынок BingX...")
         symbol = get_best_liquid_coin(memory)
         print(f"Выбрана монета: {symbol}")
         
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=40)
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe='4h', limit=50)
         df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
         
         levels = calculate_realistic_levels(df)
         
-        print("Генерируем профессиональный терминальный график...")
-        chart_file = generate_terminal_chart(df, symbol, levels)
+        print("Генерируем элитный терминальный график...")
+        chart_file = generate_elite_terminal_chart(df, symbol, levels)
         
-        print("Генерация аналитики через OpenRouter (free)...")
+        print("Генерация аналитики через OpenRouter...")
         analysis_text = ask_openrouter_human_style(symbol, levels)
         
         send_to_telegram(analysis_text, chart_file)
