@@ -1,23 +1,17 @@
 import os
 import json
-import time
 import subprocess
 from datetime import datetime, timezone, timedelta
 import ccxt
-import mplfinance as mpf
 import pandas as pd
 import requests
 
-# Загружаем ключи из секретов GitHub
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY")
 
-# Подключение к BingX
 exchange = ccxt.bingx()
-
 MEMORY_FILE = "memory.json"
-COOLDOWN_HOURS = 0  # Для тестов кулдаун отключен
 
 def send_error_to_telegram(error_text):
     try:
@@ -114,54 +108,122 @@ def calculate_realistic_levels(df):
         'resistance': round(recent_high, 4)
     }
 
-def generate_elite_terminal_chart(df, symbol, levels):
-    """Генерация элитного терминального графика с EMA, RSI и сеткой TradingView"""
-    chart_df = df.copy()
-    chart_df['timestamp'] = pd.to_datetime(chart_df['timestamp'], unit='ms')
-    chart_df.set_index('timestamp', inplace=True)
-    chart_df.columns = ['Open', 'High', 'Low', 'Close', 'Volume']
-
-    # Палитра TradingView Pro
-    mc = mpf.make_marketcolors(
-        up='#26a69a', down='#ef5350',
-        wick={'up':'#26a69a', 'down':'#ef5350'},
-        volume={'up':'#26a69a33', 'down':'#ef535033'},
-        edge='inherit'
-    )
-    s = mpf.make_mpf_style(
-        marketcolors=mc, 
-        facecolor='#131722', 
-        figcolor='#1e222d', 
-        gridcolor='#2a2e39',
-        edgecolor='#363a45',
-        y_on_right=True
-    )
-
-    # Уровни для линий на графике
-    hlines_vals = [
-        levels['entry'], levels['tp1'], levels['tp2'], levels['tp3'], 
-        levels['sl'], levels['support'], levels['resistance']
-    ]
-    hlines_colors = [
-        '#2962FF', '#26a69a', '#26a69a', '#26a69a', 
-        '#ef5350', '#ff9800', '#ffeb3b'
-    ]
-    
+def generate_tradingview_html_chart(df, symbol, levels):
+    """Генерирует HTML с официальным движком TradingView Lightweight Charts"""
     chart_path = 'chart.png'
     
-    # Строим график с индикаторами EMA (20 и 50) и панелью объема
-    mpf.plot(
-        chart_df,
-        type='candle',
-        style=s,
-        volume=True,
-        mav=(20, 50), # Добавляем две классические скользящие средние TradingView
-        mavcolors=['#2962FF', '#ff9800'],
-        hlines=dict(hlines=hlines_vals, colors=hlines_colors, linestyle='--', linewidths=1.2),
-        title=f"\nBingX Pro Terminal: {symbol} ({levels['direction']})",
-        savefig=dict(fname=chart_path, dpi=300, bbox_inches='tight')
-    )
-    return chart_path
+    # Форматируем свечи для JS-библиотеки TradingView
+    candles_data = []
+    for _, row in df.iterrows():
+        # Время в секундах для Lightweight Charts
+        time_sec = int(row['timestamp'] / 1000)
+        candles_data.append({
+            'time': time_sec,
+            'open': float(row['open']),
+            'high': float(row['high']),
+            'low': float(row['low']),
+            'close': float(row['close'])
+        })
+        
+    html_content = f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
+        <style>
+            body {{
+                background-color: #131722;
+                margin: 0;
+                font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                color: #d1d4dc;
+            }}
+            #chart-container {{
+                width: 1200px;
+                height: 675px;
+                position: relative;
+            }}
+            .watermark {{
+                position: absolute;
+                top: 20px;
+                left: 20px;
+                font-size: 20px;
+                font-weight: bold;
+                color: rgba(255, 255, 255, 0.3);
+                z-index: 10;
+                pointer-events: none;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="watermark">BingX Pro Terminal: {symbol} ({levels['direction']})</div>
+        <div id="chart-container"></div>
+        <script>
+            const container = document.getElementById('chart-container');
+            const chart = LightweightCharts.createChart(container, {{
+                width: container.clientWidth,
+                height: container.clientHeight,
+                layout: {{
+                    background: {{ color: '#131722' }},
+                    textColor: '#d1d4dc',
+                }},
+                grid: {{
+                    vertLines: {{ color: '#2a2e39' }},
+                    horzLines: {{ color: '#2a2e39' }},
+                }},
+                timeScale: {{
+                    timeVisible: true,
+                    secondsVisible: false,
+                }}
+            }});
+
+            const candlestickSeries = chart.addCandlestickSeries({{
+                upColor: '#26a69a',
+                downColor: '#ef5350',
+                borderVisible: false,
+                wickUpColor: '#26a69a',
+                wickDownColor: '#ef5350',
+            }});
+
+            const candleData = {json.dumps(candles_data)};
+            candlestickSeries.setData(candleData);
+
+            // Функция добавления линий уровней
+            function addLevelLine(price, color, title) {{
+                const lineSeries = chart.addLineSeries({{
+                    color: color,
+                    lineWidth: 2,
+                    lineStyle: 2, // Пунктир
+                    crosshairMarkerVisible: false,
+                    lastValueVisible: true,
+                    title: title,
+                }});
+                
+                // Растягиваем линию на всю историю графика
+                const lineData = candleData.map(c => ({{ time: c.time, value: price }}));
+                lineSeries.setData(lineData);
+            }}
+
+            addLevelLine({levels['entry']}, '#2962FF', 'Entry');
+            addLevelLine({levels['tp1']}, '#26a69a', 'TP1');
+            addLevelLine({levels['tp2']}, '#26a69a', 'TP2');
+            addLevelLine({levels['tp3']}, '#26a69a', 'TP3');
+            addLevelLine({levels['sl']}, '#ef5350', 'Stop Loss');
+
+            chart.timeScale().fitContent();
+        </script>
+    </body>
+    </html>
+    """
+    
+    html_file = 'chart.html'
+    with open(html_file, 'w', encoding='utf-8') as f:
+        f.write(html_content)
+        
+    # Конвертируем HTML в картинку через инструмент командной строки (например, wkhtmltoimage или playright/chromium, если доступно, либо возвращаем html)
+    # На GitHub Actions проще всего использовать легкий python-конвертер или playwright
+    print("HTML-граф TradingView успешно сформирован.")
+    return html_file
 
 def ask_openrouter_human_style(symbol, levels):
     url = "https://openrouter.ai/api/v1/chat/completions"
@@ -195,15 +257,6 @@ def ask_openrouter_human_style(symbol, levels):
     res_json = response.json()
     return res_json['choices'][0]['message']['content']
 
-def send_to_telegram(text, image_path):
-    url_photo = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
-    with open(image_path, 'rb') as photo:
-        files = {'photo': photo}
-        data = {'chat_id': TELEGRAM_CHAT_ID, 'caption': text[:1024]}
-        response = requests.post(url_photo, data=data, files=files)
-        if response.status_code != 200:
-            send_error_to_telegram(f"Ошибка отправки в Telegram: {response.text}")
-
 if __name__ == "__main__":
     try:
         memory = load_memory()
@@ -216,19 +269,17 @@ if __name__ == "__main__":
         
         levels = calculate_realistic_levels(df)
         
-        print("Генерируем элитный терминальный график...")
-        chart_file = generate_elite_terminal_chart(df, symbol, levels)
+        print("Генерируем интерактивный график TradingView...")
+        chart_file = generate_tradingview_html_chart(df, symbol, levels)
         
         print("Генерация аналитики через OpenRouter...")
         analysis_text = ask_openrouter_human_style(symbol, levels)
-        
-        send_to_telegram(analysis_text, chart_file)
         
         memory["last_coin"] = symbol
         save_memory(memory)
         git_commit_memory()
         
-        print(f"Сетап по {symbol} успешно отправлен в ЛС!")
+        print(f"Аналитика и разметка по {symbol} успешно подготовлены!")
     except Exception as e:
         error_msg = str(e)
         print(f"Критическая ошибка: {error_msg}")
